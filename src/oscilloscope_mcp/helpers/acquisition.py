@@ -229,6 +229,27 @@ def validate_averages(profile: dict[str, Any], averages: Any) -> int:
     )
 
 
+_POINT_SUFFIX = {"K": 1_000, "M": 1_000_000}
+
+
+def parse_point_count(value: Any) -> int:
+    """Parse a point count such as ``12000``, ``"1.2e4"``, ``"10k"`` or
+    ``"25M"`` (case-insensitive suffix, optional ``pts``) into an int.
+    Raises :class:`ValueError` on anything else.
+    """
+    s = str(value).strip().upper()
+    if s.endswith("PTS"):
+        s = s[:-3].strip()
+    mult = 1
+    if s and s[-1] in _POINT_SUFFIX:
+        mult = _POINT_SUFFIX[s[-1]]
+        s = s[:-1].strip()
+    n = float(s) * mult
+    if n != int(n):
+        raise ValueError(f"point count {value!r} is not a whole number")
+    return int(n)
+
+
 def validate_memory_depth(
     profile: dict[str, Any], active_channels: int, value: Any
 ) -> str | int:
@@ -258,12 +279,14 @@ def validate_memory_depth(
             f"memory_depth 'AUTO' not valid for {active_channels} active channel(s); "
             f"valid: {', '.join(allowed)}"
         )
-    # Numeric match.
+    # Numeric match. Accept a k/M suffix ("10k", "1M") as well as plain
+    # integers / scientific notation.
     try:
-        want_int = int(float(want))
+        want_int = parse_point_count(want)
     except (TypeError, ValueError):
         raise AcquisitionValidationError(
-            f"memory_depth {value!r} must be 'AUTO' or a numeric value"
+            f"memory_depth {value!r} must be 'AUTO' or a numeric value "
+            "(e.g. 10000, 1e6, '10k', '1M')"
         )
     for a in allowed_raw:
         if str(a).upper() == "AUTO":

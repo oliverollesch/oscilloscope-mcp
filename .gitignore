@@ -16,6 +16,9 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+# Local instrument address
+.env
+
 # Editor
 .vscode/*
 !.vscode/settings.json

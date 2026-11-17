@@ -80,8 +80,10 @@ def compute_caveats(
             )
 
     if sample_rate is not None and timebase_s_per_div is not None:
-        # DS1000Z displays 12 divisions, so total window = 12 × s/div.
-        window_s = 12.0 * timebase_s_per_div
+        # Total window = horizontal divisions × s/div (DS1000Z: 12,
+        # MSO5000: 10). Profiles that omit the key get the DS1000Z value.
+        h_divs = _get_capability(profile, "horizontal_divisions") or 12.0
+        window_s = h_divs * timebase_s_per_div
         required_pts = window_s * sample_rate
         mem_pts = _get_capability(profile, "memory_depth_pts_total")
         # Allocate evenly across active channels when multi-channel mode

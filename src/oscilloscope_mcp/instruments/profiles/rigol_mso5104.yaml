@@ -1,0 +1,38 @@
+# RIGOL MSO5104 — 100 MHz, 4 analog + 16 digital channel mixed-signal
+# oscilloscope (MSO5000 series). Instruction set shared via the family
+# fragment; this file only carries model-specific numbers.
+
+model: RIGOL_MSO5104
+vendor: RIGOL
+family: MSO5000
+idn_match: "RIGOL\\s*TECHNOLOGIES\\s*,\\s*MSO5104"
+includes: [_mso5000_family.yaml]
+transport:
+  kind: scpi_lan
+  default_port: 5555
+
+capability:
+  analog_bw_hz: 100.0e+6
+  channels: 4
+  digital_channels: 16
+  # Datasheet max real-time sample rate: 8 GSa/s (1 ch), 4 GSa/s (half
+  # channel), 2 GSa/s (all channels).
+  sample_rate_mode_dependent:
+    "1": 8.0e+9
+    "2": 4.0e+9
+    "4": 2.0e+9
+  # Guide: 200 Mpts single-channel maximum (split across channels).
+  memory_depth_pts_total: 200.0e+6
+  input_impedance_ohm: 1.0e+6
+  trigger_jitter_min_ns_per_sample_period: 1.0
+  protocol_decode: [RS232, I2C, SPI, CAN, LIN, FlexRay, I2S, MIL-STD-1553]
+  # :DISPlay:DATA? returns BMP; the driver converts to PNG on request.
+  screenshot_formats: [PNG, BMP]
+  display_pixel_width: 1024
+  display_pixel_height: 600
+
+notes:
+  - "10:1 passive probes add ~10 pF loading — derate edge timing on fast nodes."
+  - "Serial triggers/decoders (RS232, I2C, SPI, ...) are licensed options."
+  - "Digital channels D0–D15 are accepted as trigger sources; waveform reads and measurements are analog-only in this driver."
+  - "Driver written from the Oct 2018 programming guide. Read paths verified on hardware (fw 00.01.03.02.02, USB); setters, cursors, RAW reads and statistics not yet."

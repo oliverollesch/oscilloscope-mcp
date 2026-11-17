@@ -162,7 +162,7 @@ def build_server() -> FastMCP:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(result.image_bytes)
 
-        caveats: list[str] = []
+        caveats: list[str] = list(result.caveats)
         if result.cursors_set:
             caveats.extend(caveat_for_cursor_readout())
 

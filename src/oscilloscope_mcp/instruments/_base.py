@@ -56,6 +56,9 @@ class ScreenshotResult:
     image_format: str
     cursors_set: list[CursorPair]
     channel_labels_applied: dict[int, str]
+    # Driver-specific warnings (e.g. a requested annotation the instrument
+    # cannot render); surfaced verbatim in the tool's ``caveats[]``.
+    caveats: list[str] = field(default_factory=list)
 
 
 @dataclass

@@ -5,7 +5,8 @@ instrument correctly". It is parametrized over every model registered
 in :data:`oscilloscope_mcp.instruments.MODEL_REGISTRY`, but each test
 skips unless the operator has set up the test environment:
 
-- ``SCOPE_MCP_HOST`` must point at the instrument
+- ``SCOPE_MCP_HOST`` must point at the instrument (LAN), or
+  ``SCOPE_MCP_USB=auto`` must be set (USB)
 - ``SCOPE_MCP_CONFORMANCE_MODEL`` (optional) restricts the run
   to one model; otherwise ``*IDN?`` auto-detect picks one
 
@@ -34,11 +35,12 @@ from oscilloscope_mcp.instruments._base import (
 
 
 _HOST = os.environ.get("SCOPE_MCP_HOST")
+_USB = os.environ.get("SCOPE_MCP_USB", "").strip().lower() not in ("", "0", "false", "no", "off")
 _RESTRICT_MODEL = os.environ.get("SCOPE_MCP_CONFORMANCE_MODEL")
 
 pytestmark = pytest.mark.skipif(
-    not _HOST,
-    reason="SCOPE_MCP_HOST not set — skipping live conformance tests",
+    not (_HOST or _USB),
+    reason="neither SCOPE_MCP_HOST nor SCOPE_MCP_USB set — skipping live conformance tests",
 )
 
 

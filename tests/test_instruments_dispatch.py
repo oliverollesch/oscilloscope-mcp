@@ -23,6 +23,8 @@ def _clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "SCOPE_MCP_HOST",
         "SCOPE_MCP_PORT",
         "SCOPE_MCP_MODEL",
+        "SCOPE_MCP_USB",
+        "SCOPE_MCP_VISA_BACKEND",
     ):
         monkeypatch.delenv(var, raising=False)
 
@@ -133,21 +135,49 @@ _DS1000Z_TRIGGER_TYPES = {
     ("SPI", "SPI", True),
 }
 
+# MSO5000 trigger types covered by the profile, per RIGOL MSO5000
+# Programming Guide (PGA25100-1110, :TRIGger:MODE). The 12 non-serial
+# types are standard; RS232/IIC/SPI are option-licensed. CAN / FlexRay /
+# LIN / IIS / M1553 are intentionally left to the raw scope_query path.
+_MSO5000_TRIGGER_TYPES = {
+    ("EDGE", "EDGE", False),
+    ("PULSe", "PULS", False),
+    ("SLOPe", "SLOP", False),
+    ("VIDeo", "VID", False),
+    ("PATTern", "PATT", False),
+    ("DURation", "DUR", False),
+    ("TIMeout", "TIM", False),
+    ("RUNT", "RUNT", False),
+    ("WINDow", "WIND", False),
+    ("DELay", "DEL", False),
+    ("SETup", "SET", False),
+    ("NEDGe", "NEDG", False),
+    ("RS232", "RS232", True),
+    ("IIC", "IIC", True),
+    ("SPI", "SPI", True),
+}
+
+_TRIGGER_TYPES_BY_FAMILY = {
+    "DS1000Z": _DS1000Z_TRIGGER_TYPES,
+    "MSO5000": _MSO5000_TRIGGER_TYPES,
+}
+
 
 @pytest.mark.parametrize("model", sorted(MODEL_REGISTRY))
-def test_profile_declares_complete_ds1000z_trigger_inventory(model: str) -> None:
-    """Every DS1000Z profile must declare the full :TRIG:MODE type set so
-    a future scope_trigger tool can validate against it. Guards against
-    silently dropping a type (e.g. forgetting the option-licensed ones).
+def test_profile_declares_complete_trigger_inventory(model: str) -> None:
+    """Every profile must declare its family's full :TRIG:MODE type set so
+    scope_trigger can validate against it. Guards against silently
+    dropping a type (e.g. forgetting the option-licensed ones).
     """
     _, filename = MODEL_REGISTRY[model]
     profile = instruments._load_profile(filename)
     trig = profile["capability"]["trigger"]
 
+    expected = _TRIGGER_TYPES_BY_FAMILY[profile["family"]]
     declared = {
         (t["keyword"], t["query"], bool(t["option"])) for t in trig["types"]
     }
-    assert declared == _DS1000Z_TRIGGER_TYPES, (
+    assert declared == expected, (
         f"{filename} trigger inventory drifted from the programming guide"
     )
     # Query-return forms must be unique — they are how :TRIG:MODE? results

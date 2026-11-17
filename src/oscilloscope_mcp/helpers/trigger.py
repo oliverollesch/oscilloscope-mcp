@@ -316,8 +316,8 @@ def _format_source(
     profile: dict[str, Any], spec: dict[str, Any], value: Any
 ) -> str:
     """A bare number or CHAN<n> → ``CHAN<n>`` (n bounded by channel count);
-    a named source (e.g. AC) must be listed in the spec's ``named``. Digital
-    (D0–D15) and unknown sources are rejected — these are analog scopes.
+    a named source (e.g. AC, ACLine, or D0–D15 on mixed-signal models) must
+    be listed in the spec's ``named``. Anything else is rejected.
     """
     s = str(value).strip().upper()
     m = re.fullmatch(r"(?:CHAN(?:NEL)?)?([0-9]+)", s)

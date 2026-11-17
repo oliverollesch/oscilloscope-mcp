@@ -78,20 +78,40 @@ tools, with no hands on the front panel.*
 > Drivers ship for the **RIGOL DS1000Z series** (DS1054Z / DS1074Z / DS1104Z);
 > only **DS1104Z** is verified on real hardware so far. The others use the same
 > code path and profile, but are not conformance-tested yet.
+>
+> **RIGOL MSO5104** (MSO5000 series) is supported by a separate driver written
+> from the MSO5000 Programming Guide (Oct 2018). The read paths (identification,
+> screenshot, channel / timebase / acquire / trigger reads, waveform reads,
+> measurements) are verified on a real MSO5104 over USB; setters, cursors, RAW
+> reads and statistics are not yet. Differences from the DS1000Z that you will
+> notice:
+> - Screenshots: the scope only returns BMP, so the server converts it to PNG locally.
+> - Channel labels are not available (the guide has no label command); asking
+>   for them returns a caveat instead.
+> - Channel coupling is AC/DC only.
+> - Memory depth is given as `10k` / `1M` / … up to 200M (integers also work).
+> - Two-source measurements use the `RRDELAY` / `RFDELAY` / `FRDELAY` / `FFDELAY`
+>   (and `…PHASE`) set. The DS1000Z names `RDELAY` / `FDELAY` / `RPHASE` /
+>   `FPHASE` still work.
+> - Triggers accept the digital channels `D0`–`D15` as sources. Waveform reads
+>   and measurements are analog-only.
 
 ## Install
 
 ```bash
 git clone https://github.com/masahiro-999/oscilloscope-mcp.git
 cd oscilloscope-mcp
-pip install -e .
+pip install -e .            # LAN only
+pip install -e ".[usb]"     # LAN + USB (adds PyVISA)
 ```
 
 ## Run as MCP server
 
 ```bash
-# Set the scope's network address.
+# Either: the scope's network address (LAN, raw SCPI on port 5555) ...
 export SCOPE_MCP_HOST=<your-scope-ip>     # e.g. 192.168.1.42
+# ... or: USB (rear USB-B "Device" port). Picks the single RIGOL scope present.
+export SCOPE_MCP_USB=auto
 
 # Start the server (stdio transport, default).
 python -m oscilloscope_mcp
@@ -100,10 +120,26 @@ python -m oscilloscope_mcp
 oscilloscope-mcp
 ```
 
+### USB connection
+
+On the scope, set **Utility → IO → USB** to *Computer* (the USB-B device port).
+The PC also needs a driver for the scope's USB interface. Two setups work, and
+the server tries both:
+
+| Driver bound to the scope | Comes from | VISA backend used |
+|---|---|---|
+| Native USBTMC ("USB Test and Measurement Device") | NI-VISA, or RIGOL UltraSigma which installs it | `@ivi` |
+| WinUSB | [Zadig](https://zadig.akeo.ie/) | `@py` (pyvisa-py + libusb, installed by the `usb` extra) |
+
+While the server runs it keeps the USB session open, so other programs
+(UltraSigma, another MCP server) can't use the scope over USB at the same time.
+
 ## Register with Claude Code
 
 ```bash
-claude mcp add oscilloscope -- python -m oscilloscope_mcp
+claude mcp add oscilloscope -e SCOPE_MCP_HOST=<your-scope-ip> -- python -m oscilloscope_mcp
+# or, over USB:
+claude mcp add oscilloscope -e SCOPE_MCP_USB=auto -- python -m oscilloscope_mcp
 ```
 
 Then the `scope_query`, `scope_screenshot`, `scope_trigger`,
@@ -141,15 +177,19 @@ oscilloscope-mcp/                 # repo (kebab-case)
 │   ├── __main__.py           # `python -m oscilloscope_mcp` entry
 │   ├── server.py             # FastMCP server: tool registration + dispatch
 │   ├── transport/
-│   │   └── scpi_lan.py       # raw TCP SCPI client (zero third-party deps)
+│   │   ├── scpi_lan.py       # raw TCP SCPI client (zero third-party deps)
+│   │   └── scpi_usb.py       # USBTMC SCPI client via PyVISA (optional `usb` extra)
 │   ├── instruments/
 │   │   ├── _base.py          # Scope ABC, vendor-agnostic interface
 │   │   ├── __init__.py       # MODEL_REGISTRY + open_scope() dispatch
 │   │   ├── rigol_ds1000z.py  # RIGOL DS1054Z / DS1104Z driver
+│   │   ├── rigol_mso5000.py  # RIGOL MSO5000 driver (subclasses DS1000Z)
 │   │   └── profiles/
 │   │       ├── _ds1000z_family.yaml  # shared trigger + acquisition schema
+│   │       ├── _mso5000_family.yaml  # MSO5000 instruction set
 │   │       ├── rigol_ds1104z.yaml
-│   │       └── rigol_ds1054z.yaml
+│   │       ├── rigol_ds1054z.yaml
+│   │       └── rigol_mso5104.yaml
 │   └── helpers/
 │       ├── caveat_calc.py    # capability + current setting → caveats[]
 │       ├── trigger.py        # trigger profile: validate / normalize / caveats
@@ -177,7 +217,9 @@ oscilloscope-mcp/                 # repo (kebab-case)
 |---|---|---|
 | `SCOPE_MCP_HOST` | yes | scope IP or hostname |
 | `SCOPE_MCP_PORT` | no (default 5555) | SCPI TCP port |
-| `SCOPE_MCP_MODEL` | no | model key (e.g. `RIGOL_DS1104Z`). If unset, `*IDN?` is parsed and matched against each profile's `idn_match` regex |
+| `SCOPE_MCP_USB` | instead of HOST | `auto` (the single RIGOL USB scope), a serial number (to pick one of several), or a full VISA resource string. Takes priority over `SCOPE_MCP_HOST`; a tool call with an explicit `host` still uses LAN |
+| `SCOPE_MCP_VISA_BACKEND` | no | restrict / order the USB backends: `@ivi`, `@py`, or `@py,@ivi` (default: `@ivi,@py`) |
+| `SCOPE_MCP_MODEL` | no | model key (`RIGOL_DS1104Z`, `RIGOL_DS1054Z`, `RIGOL_MSO5104`). If unset, `*IDN?` is parsed and matched against each profile's `idn_match` regex |
 
 Env-var prefix `SCOPE_MCP_*` is project-specific so it does not collide
 with other shells driving unrelated tools.
@@ -236,6 +278,12 @@ verified:
   *RTL-simulation-output vs hardware-capture* run has not been done yet.
 - **Models other than DS1104Z** (DS1054Z / DS1074Z): same code path + profile,
   not conformance-tested.
+- **MSO5104 setters and annotations.** Read paths are hardware-verified over
+  USB. Still unverified: the setters (channel / timebase / trigger / acquire),
+  whether the cursor Y axis has its origin at the top (the guide contradicts
+  itself), the RAW `:WAV:DATA?` chunk size, and statistics.
+- **USB with the `@py` backend (WinUSB).** Hardware-verified only with `@ivi`
+  (NI-VISA + native USBTMC driver).
 
 ## Security / trust model
 

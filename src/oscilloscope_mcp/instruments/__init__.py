@@ -9,6 +9,10 @@ Adding a new scope is three steps (see ``bench/README.md``):
 After that, ``open_scope()`` resolves the right driver either from the
 ``SCOPE_MCP_MODEL`` environment variable or by parsing the
 instrument's ``*IDN?`` against each profile's ``idn_match`` regex.
+
+Transport: an explicit ``host`` argument always means LAN. Otherwise
+``SCOPE_MCP_USB`` (``auto`` / a VISA resource string / a serial number)
+selects USB, and ``SCOPE_MCP_HOST`` selects LAN.
 """
 
 from __future__ import annotations
@@ -20,7 +24,9 @@ from typing import Any
 
 from oscilloscope_mcp.instruments._base import Scope
 from oscilloscope_mcp.instruments.rigol_ds1000z import RigolDs1000z
+from oscilloscope_mcp.instruments.rigol_mso5000 import RigolMso5000
 from oscilloscope_mcp.transport.scpi_lan import ScpiLan
+from oscilloscope_mcp.transport.scpi_usb import DEFAULT_BACKENDS, ScpiUsb
 
 
 # Source-of-truth dispatch table. Keys are stable model identifiers used
@@ -28,17 +34,52 @@ from oscilloscope_mcp.transport.scpi_lan import ScpiLan
 MODEL_REGISTRY: dict[str, tuple[type[Scope], str]] = {
     "RIGOL_DS1104Z": (RigolDs1000z, "rigol_ds1104z.yaml"),
     "RIGOL_DS1054Z": (RigolDs1000z, "rigol_ds1054z.yaml"),
+    "RIGOL_MSO5104": (RigolMso5000, "rigol_mso5104.yaml"),
 }
 
 
 _HOST_ENV = "SCOPE_MCP_HOST"
 _PORT_ENV = "SCOPE_MCP_PORT"
 _MODEL_ENV = "SCOPE_MCP_MODEL"
+_USB_ENV = "SCOPE_MCP_USB"
+_VISA_BACKEND_ENV = "SCOPE_MCP_VISA_BACKEND"
 _PROFILES_DIR = Path(__file__).parent / "profiles"
+
+_FALSY = {"", "0", "false", "no", "off"}
+_TRUTHY = {"1", "true", "yes", "on", "auto"}
 
 
 class ScopeDispatchError(RuntimeError):
     """Raised when ``open_scope()`` cannot resolve a driver."""
+
+
+def resolve_usb_selector_from_env() -> str | None:
+    """Read ``SCOPE_MCP_USB``: ``None`` when unset/falsy, ``"auto"`` for a
+    truthy flag, otherwise the value itself (VISA resource string or serial).
+    """
+    raw = os.environ.get(_USB_ENV, "").strip()
+    if raw.lower() in _FALSY:
+        return None
+    if raw.lower() in _TRUTHY:
+        return "auto"
+    return raw
+
+
+def resolve_visa_backends_from_env() -> tuple[str, ...]:
+    """``SCOPE_MCP_VISA_BACKEND`` (``@ivi`` / ``@py``, comma-separated for
+    an order) restricts which VISA backends USB tries; default: both.
+    """
+    raw = os.environ.get(_VISA_BACKEND_ENV, "").strip()
+    if not raw:
+        return DEFAULT_BACKENDS
+    backends = tuple(b.strip() for b in raw.split(",") if b.strip())
+    bad = [b for b in backends if b not in DEFAULT_BACKENDS]
+    if bad:
+        raise ScopeDispatchError(
+            f"{_VISA_BACKEND_ENV}={raw!r} invalid; use any of "
+            f"{', '.join(DEFAULT_BACKENDS)}"
+        )
+    return backends
 
 
 def resolve_host_port_from_env() -> tuple[str, int]:
@@ -49,16 +90,20 @@ def resolve_host_port_from_env() -> tuple[str, int]:
     if not host:
         raise ScopeDispatchError(
             f"{_HOST_ENV} is not set; cannot connect to scope. "
-            "Set it to the instrument's IP or hostname."
+            "Set it to the instrument's IP or hostname, or set "
+            f"{_USB_ENV}=auto to connect over USB."
         )
+    return host, _port_from_env()
+
+
+def _port_from_env() -> int:
     port_str = os.environ.get(_PORT_ENV, "5555")
     try:
-        port = int(port_str)
+        return int(port_str)
     except ValueError as e:
         raise ScopeDispatchError(
             f"{_PORT_ENV}={port_str!r} is not an integer"
         ) from e
-    return host, port
 
 
 def open_scope(
@@ -72,16 +117,13 @@ def open_scope(
 
     Resolution order:
 
-    - ``host`` / ``port`` default to the env vars when omitted.
+    - transport: an explicit ``host`` → LAN; else ``SCOPE_MCP_USB`` set →
+      USB; else LAN via ``SCOPE_MCP_HOST`` / ``SCOPE_MCP_PORT``.
     - ``model`` defaults to ``SCOPE_MCP_MODEL`` when omitted; if
       still missing, ``*IDN?`` is queried and matched against each
       profile's ``idn_match`` regex (exactly one match required).
     """
-    if host is None or port is None:
-        env_host, env_port = resolve_host_port_from_env()
-        host = host or env_host
-        port = port if port is not None else env_port
-    transport = ScpiLan(host=host, port=port, timeout_s=timeout_s)
+    transport = _make_transport(host, port, timeout_s)
 
     model = model or os.environ.get(_MODEL_ENV) or None
     if model is None:
@@ -98,7 +140,26 @@ def open_scope(
     return driver_cls(transport=transport, profile=profile)
 
 
-def _auto_detect_model(transport: ScpiLan) -> str:
+def _make_transport(
+    host: str | None, port: int | None, timeout_s: float
+) -> ScpiLan | ScpiUsb:
+    if host is None:
+        usb_selector = resolve_usb_selector_from_env()
+        if usb_selector is not None:
+            return ScpiUsb(
+                selector=usb_selector,
+                timeout_s=timeout_s,
+                backends=resolve_visa_backends_from_env(),
+            )
+    if host is None:
+        host, env_port = resolve_host_port_from_env()
+        port = port if port is not None else env_port
+    elif port is None:
+        port = _port_from_env()  # explicit host needs no SCOPE_MCP_HOST
+    return ScpiLan(host=host, port=port, timeout_s=timeout_s)
+
+
+def _auto_detect_model(transport: ScpiLan | ScpiUsb) -> str:
     """Query *IDN? and match against each profile's idn_match regex.
 
     Exactly one match is required — zero hits or multiple hits raise

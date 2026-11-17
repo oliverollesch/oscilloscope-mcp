@@ -174,11 +174,7 @@ class RigolDs1000z(Scope):
     def get_acquire(self) -> AcquireState:
         acq_type = self.transport.query(":ACQ:TYPE?").strip() or None
         averages = _parse_int(self.transport.query(":ACQ:AVER?"))
-        mdepth_raw = self.transport.query(":ACQ:MDEP?").strip()
-        if mdepth_raw.upper() == "AUTO":
-            memory_depth: str | int | None = "AUTO"
-        else:
-            memory_depth = _parse_int(mdepth_raw)
+        memory_depth = self._parse_memory_depth(self.transport.query(":ACQ:MDEP?"))
         sample_rate = _parse_float(self.transport.query(":ACQ:SRAT?"))
         return AcquireState(
             type=acq_type,
@@ -201,9 +197,21 @@ class RigolDs1000z(Scope):
             validated_mdepth = acq_helper.validate_memory_depth(
                 self.profile, active, setup.memory_depth
             )
-            cmds.append(f":ACQ:MDEP {validated_mdepth}")
+            cmds.append(f":ACQ:MDEP {self._memory_depth_arg(validated_mdepth)}")
         self.transport.write_many(cmds)
         return self.get_acquire()
+
+    # Dialect hooks for memory depth. DS1000Z reads/writes plain integers
+    # (``12000``); other RIGOL families use suffixed tokens (``10k``).
+
+    def _parse_memory_depth(self, resp: str) -> str | int | None:
+        raw = (resp or "").strip()
+        if raw.upper() == "AUTO":
+            return "AUTO"
+        return _parse_int(raw)
+
+    def _memory_depth_arg(self, validated: str | int) -> str:
+        return str(validated)
 
     # ------------------------------------------------------------------
     # Trigger
@@ -426,11 +434,7 @@ class RigolDs1000z(Scope):
         src = _normalize_source(source, self._channel_count())
         # Set source + read mode/format together on one connection so the
         # subsequent :WAV:PRE? / :WAV:DATA? see a consistent configuration.
-        self.transport.write_many([
-            f":WAV:SOURce {src}",
-            ":WAV:MODE NORMal",
-            ":WAV:FORMat BYTE",
-        ])
+        self.transport.write_many(self._waveform_setup_cmds(src, "NORMal"))
         pre = _parse_preamble(self.transport.query(":WAV:PREamble?"))
         raw = self.transport.query_binary(":WAV:DATA?")
 
@@ -439,19 +443,10 @@ class RigolDs1000z(Scope):
         yinc = pre["yincrement"]
         volts = [(b - yorigin - yref) * yinc for b in raw]
 
-        # time[i] = (i - xreference) * xincrement + xorigin (seconds).
-        xinc = pre["xincrement"]
-        xorigin = pre["xorigin"]
-        xref = pre["xreference"]
-        # Adjust so trigger position = t=0 (same as RAW path).
-        try:
-            trig_pos = int(self.transport.query(":TRIG:POS?"))
-        except (ValueError, Exception):
-            trig_pos = 0
-        if trig_pos < 0:
-            trig_pos = 0
-        t0_s = (0 - xref) * xinc + xorigin - trig_pos * xinc
-        return Waveform(source=src, volts=volts, t0_s=t0_s, dt_s=xinc)
+        return Waveform(
+            source=src, volts=volts, t0_s=self._waveform_t0_s(pre),
+            dt_s=pre["xincrement"],
+        )
 
     def _read_waveform_raw(self, source: str) -> Waveform:
         """Read CH<n> in RAW (full memory) mode, BYTE format.
@@ -477,11 +472,7 @@ class RigolDs1000z(Scope):
         src = _normalize_source(source, self._channel_count())
 
         # 2. Configure source, RAW mode, BYTE format.
-        self.transport.write_many([
-            f":WAV:SOURce {src}",
-            ":WAV:MODE RAW",
-            ":WAV:FORMat BYTE",
-        ])
+        self.transport.write_many(self._waveform_setup_cmds(src, "RAW"))
 
         # 3. Read preamble to determine total point count + scaling.
         pre = _parse_preamble(self.transport.query(":WAV:PREamble?"))
@@ -505,21 +496,38 @@ class RigolDs1000z(Scope):
         yinc = pre["yincrement"]
         volts = [(b - yorigin - yref) * yinc for b in raw_bytes]
 
-        # time[i] = (i - xreference) * xincrement + xorigin (seconds).
+        return Waveform(
+            source=src, volts=volts, t0_s=self._waveform_t0_s(pre),
+            dt_s=pre["xincrement"],
+        )
+
+    # Dialect hooks for waveform reads.
+
+    def _waveform_setup_cmds(self, src: str, mode: str) -> list[str]:
+        """Commands that select ``src`` and the read ``mode`` (``NORMal`` /
+        ``RAW``) in BYTE format, sent as one burst before ``:WAV:PRE?``.
+        """
+        return [
+            f":WAV:SOURce {src}",
+            f":WAV:MODE {mode}",
+            ":WAV:FORMat BYTE",
+        ]
+
+    def _waveform_t0_s(self, pre: dict[str, float]) -> float:
+        """Time of sample 0 relative to the trigger, in seconds.
+
+        time[i] = (i - xreference) * xincrement + xorigin, then shifted so
+        the trigger lands at t=0: :TRIG:POS? returns the sample index of
+        the trigger in memory (data before it is pre-trigger).
+        """
         xinc = pre["xincrement"]
-        xorigin = pre["xorigin"]
-        xref = pre["xreference"]
-        # Adjust t0 so trigger position is at t=0. :TRIG:POS? returns
-        # the sample index of the trigger in memory; data before that
-        # index is pre-trigger.
         try:
             trig_pos = int(self.transport.query(":TRIG:POS?"))
         except (ValueError, Exception):
             trig_pos = 0
         if trig_pos < 0:
             trig_pos = 0  # -2 = not triggered, -1 = outside memory
-        t0_s = (0 - xref) * xinc + xorigin - trig_pos * xinc
-        return Waveform(source=src, volts=volts, t0_s=t0_s, dt_s=xinc)
+        return (0 - pre["xreference"]) * xinc + pre["xorigin"] - trig_pos * xinc
 
     def _channel_count(self) -> int:
         return int(self.profile.get("capability", {}).get("channels", 4))

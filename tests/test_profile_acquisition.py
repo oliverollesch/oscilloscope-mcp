@@ -10,6 +10,13 @@ import pytest
 from oscilloscope_mcp.instruments import MODEL_REGISTRY, _load_profile
 
 
+# Channel coupling per family (programming guide :CHANnel<n>:COUPling).
+_COUPLING_BY_FAMILY = {
+    "DS1000Z": {"AC", "DC", "GND"},
+    "MSO5000": {"AC", "DC"},
+}
+
+
 @pytest.mark.parametrize("model", sorted(MODEL_REGISTRY))
 def test_profile_declares_acquisition_block(model: str) -> None:
     _, filename = MODEL_REGISTRY[model]
@@ -17,7 +24,7 @@ def test_profile_declares_acquisition_block(model: str) -> None:
     acq = profile["capability"]["acquisition"]
 
     ch = acq["channel"]
-    assert set(ch["coupling_modes"]) == {"AC", "DC", "GND"}
+    assert set(ch["coupling_modes"]) == _COUPLING_BY_FAMILY[profile["family"]]
     assert set(str(u).upper() for u in ch["units"]) == {
         "VOLTAGE", "WATT", "AMPERE", "UNKNOWN"
     }
